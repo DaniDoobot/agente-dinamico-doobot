@@ -136,6 +136,40 @@ def activate_prompt(prompt_id: int):
 
     return {"ok": True, "active_prompt_id": prompt_id}
 
+@app.delete("/prompts/{prompt_id}")
+def delete_prompt(prompt_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, is_active
+        FROM prompts
+        WHERE id = %s
+    """, (prompt_id,))
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Prompt no encontrado")
+
+    is_active = row[1]
+
+    if is_active:
+        cur.close()
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede eliminar el prompt activo. Activa otro antes de borrarlo."
+        )
+
+    cur.execute("DELETE FROM prompts WHERE id = %s", (prompt_id,))
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"ok": True, "deleted_prompt_id": prompt_id}
 
 @app.post("/twilio/inbound")
 async def twilio_inbound(request: Request):
