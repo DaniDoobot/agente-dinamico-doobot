@@ -5,7 +5,13 @@ import os
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_connection
-from app.schemas import PromptCreate
+from app.schemas import (
+    PromptCreate,
+    PromptUpdate,
+    PromptGenerateVariantRequest,
+    PromptGenerateVariantResponse,
+)
+from app.prompt_ai import generate_prompt_variant
 
 load_dotenv()
 
@@ -18,6 +24,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def serialize_prompt_row(row):
+    return {
+        "id": row[0],
+        "name": row[1],
+        "base_prompt": row[2],
+        "is_active": row[3],
+        "created_at": row[4].isoformat(),
+        "updated_at": row[5].isoformat(),
+    }
+
 
 @app.get("/health")
 def health():
@@ -39,18 +57,7 @@ def list_prompts():
     cur.close()
     conn.close()
 
-    result = []
-    for row in rows:
-        result.append({
-            "id": row[0],
-            "name": row[1],
-            "base_prompt": row[2],
-            "is_active": row[3],
-            "created_at": row[4].isoformat(),
-            "updated_at": row[5].isoformat(),
-        })
-
-    return result
+    return [serialize_prompt_row(row) for row in rows]
 
 
 @app.get("/prompts/active")
@@ -72,14 +79,7 @@ def get_active_prompt():
     if not row:
         raise HTTPException(status_code=404, detail="No hay prompt activo")
 
-    return {
-        "id": row[0],
-        "name": row[1],
-        "base_prompt": row[2],
-        "is_active": row[3],
-        "created_at": row[4].isoformat(),
-        "updated_at": row[5].isoformat(),
-    }
+    return serialize_prompt_row(row)
 
 
 @app.post("/prompts")
@@ -99,14 +99,42 @@ def create_prompt(payload: PromptCreate):
     cur.close()
     conn.close()
 
-    return {
-        "id": row[0],
-        "name": row[1],
-        "base_prompt": row[2],
-        "is_active": row[3],
-        "created_at": row[4].isoformat(),
-        "updated_at": row[5].isoformat(),
-    }
+    return serialize_prompt_row(row)
+
+
+@app.put("/prompts/{prompt_id}")
+def update_prompt(prompt_id: int, payload: PromptUpdate):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id
+        FROM prompts
+        WHERE id = %s
+    """, (prompt_id,))
+    existing = cur.fetchone()
+
+    if not existing:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Prompt no encontrado")
+
+    cur.execute("""
+        UPDATE prompts
+        SET name = %s,
+            base_prompt = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        RETURNING id, name, base_prompt, is_active, created_at, updated_at
+    """, (payload.name, payload.base_prompt, prompt_id))
+
+    row = cur.fetchone()
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return serialize_prompt_row(row)
 
 
 @app.post("/prompts/{prompt_id}/activate")
@@ -135,6 +163,7 @@ def activate_prompt(prompt_id: int):
     conn.close()
 
     return {"ok": True, "active_prompt_id": prompt_id}
+
 
 @app.delete("/prompts/{prompt_id}")
 def delete_prompt(prompt_id: int):
@@ -170,6 +199,53 @@ def delete_prompt(prompt_id: int):
     conn.close()
 
     return {"ok": True, "deleted_prompt_id": prompt_id}
+
+
+@app.post(
+    "/prompts/{prompt_id}/generate-variant",
+    response_model=PromptGenerateVariantResponse,
+)
+def generate_variant(prompt_id: int, payload: PromptGenerateVariantRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, base_prompt
+        FROM prompts
+        WHERE id = %s
+    """, (prompt_id,))
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Prompt no encontrado")
+
+    source_prompt_id = row[0]
+    source_prompt_name = row[1]
+    source_prompt_text = row[2]
+
+    try:
+        result = generate_prompt_variant(
+            base_name=source_prompt_name,
+            base_prompt=source_prompt_text,
+            instruction=payload.instruction,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando variante con IA: {str(e)}"
+        )
+
+    return {
+        "source_prompt_id": source_prompt_id,
+        "source_prompt_name": source_prompt_name,
+        "generated_name": result["generated_name"],
+        "generated_prompt": result["generated_prompt"],
+        "change_summary": result["change_summary"],
+    }
+
 
 @app.post("/twilio/inbound")
 async def twilio_inbound(request: Request):
