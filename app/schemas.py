@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PromptCreate(BaseModel):
@@ -6,10 +6,18 @@ class PromptCreate(BaseModel):
     base_prompt: str
 
 
-class PromptResponse(BaseModel):
-    id: int
+class PromptUpdate(BaseModel):
     name: str
     base_prompt: str
-    is_active: bool
-    created_at: str
-    updated_at: str
+
+
+class PromptGenerateVariantRequest(BaseModel):
+    instruction: str = Field(..., min_length=3)
+
+
+class PromptGenerateVariantResponse(BaseModel):
+    source_prompt_id: int
+    source_prompt_name: str
+    generated_name: str
+    generated_prompt: str
+    change_summary: str
