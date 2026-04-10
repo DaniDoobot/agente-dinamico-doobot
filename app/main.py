@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 import requests
 from dotenv import load_dotenv
 import os
+import json
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_connection
@@ -31,9 +32,10 @@ def serialize_prompt_row(row):
         "id": row[0],
         "name": row[1],
         "base_prompt": row[2],
-        "is_active": row[3],
-        "created_at": row[4].isoformat(),
-        "updated_at": row[5].isoformat(),
+        "initial_message": row[3],
+        "is_active": row[4],
+        "created_at": row[5].isoformat() if row[5] else None,
+        "updated_at": row[6].isoformat() if row[6] else None,
     }
 
 
@@ -48,7 +50,7 @@ def list_prompts():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt, is_active, created_at, updated_at
+        SELECT id, name, base_prompt, initial_message, is_active, created_at, updated_at
         FROM prompts
         ORDER BY created_at DESC
     """)
@@ -66,7 +68,7 @@ def get_active_prompt():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt, is_active, created_at, updated_at
+        SELECT id, name, base_prompt, initial_message, is_active, created_at, updated_at
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -88,10 +90,14 @@ def create_prompt(payload: PromptCreate):
     cur = conn.cursor()
 
     cur.execute("""
-        INSERT INTO prompts (name, base_prompt, is_active)
-        VALUES (%s, %s, FALSE)
-        RETURNING id, name, base_prompt, is_active, created_at, updated_at
-    """, (payload.name, payload.base_prompt))
+        INSERT INTO prompts (name, base_prompt, initial_message, is_active)
+        VALUES (%s, %s, %s, FALSE)
+        RETURNING id, name, base_prompt, initial_message, is_active, created_at, updated_at
+    """, (
+        payload.name.strip(),
+        payload.base_prompt,
+        payload.initial_message.strip(),
+    ))
 
     row = cur.fetchone()
     conn.commit()
@@ -123,10 +129,16 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
         UPDATE prompts
         SET name = %s,
             base_prompt = %s,
+            initial_message = %s,
             updated_at = NOW()
         WHERE id = %s
-        RETURNING id, name, base_prompt, is_active, created_at, updated_at
-    """, (payload.name, payload.base_prompt, prompt_id))
+        RETURNING id, name, base_prompt, initial_message, is_active, created_at, updated_at
+    """, (
+        payload.name.strip(),
+        payload.base_prompt,
+        payload.initial_message.strip(),
+        prompt_id,
+    ))
 
     row = cur.fetchone()
     conn.commit()
@@ -259,7 +271,7 @@ async def twilio_inbound(request: Request):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt
+        SELECT id, name, base_prompt, initial_message
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -270,11 +282,15 @@ async def twilio_inbound(request: Request):
     conn.close()
 
     if not row:
-        raise HTTPException(status_code=400, detail="No hay prompt activo en la base de datos")
+        raise HTTPException(
+            status_code=400,
+            detail="No hay prompt activo en la base de datos"
+        )
 
     active_prompt_id = row[0]
     active_prompt_name = row[1]
     override_prompt = row[2]
+    override_initial_message = (row[3] or "").strip()
 
     payload = {
         "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
@@ -292,11 +308,17 @@ async def twilio_inbound(request: Request):
                 "agent": {
                     "prompt": {
                         "prompt": override_prompt
-                    }
+                    },
+                    "first_message": override_initial_message
                 }
             }
         }
     }
+
+    print("ACTIVE PROMPT:", active_prompt_id, active_prompt_name)
+    print("OVERRIDE INITIAL MESSAGE:", repr(override_initial_message))
+    print("PAYLOAD ELEVENLABS:")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
     resp = requests.post(
         "https://api.elevenlabs.io/v1/convai/twilio/register-call",
@@ -308,7 +330,13 @@ async def twilio_inbound(request: Request):
         timeout=20,
     )
 
+    print("ELEVENLABS STATUS:", resp.status_code)
+    print("ELEVENLABS RESPONSE:", resp.text)
+
     if not resp.ok:
-        raise HTTPException(status_code=500, detail=f"ElevenLabs error: {resp.text}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"ElevenLabs error: {resp.text}"
+        )
 
     return Response(content=resp.text, media_type="application/xml")
