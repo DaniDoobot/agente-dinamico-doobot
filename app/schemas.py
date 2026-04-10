@@ -2,13 +2,15 @@ from pydantic import BaseModel, Field
 
 
 class PromptCreate(BaseModel):
-    name: str
-    base_prompt: str
+    name: str = Field(..., min_length=1)
+    base_prompt: str = Field(..., min_length=1)
+    initial_message: str = Field(..., min_length=1)
 
 
 class PromptUpdate(BaseModel):
-    name: str
-    base_prompt: str
+    name: str = Field(..., min_length=1)
+    base_prompt: str = Field(..., min_length=1)
+    initial_message: str = Field(..., min_length=1)
 
 
 class PromptGenerateVariantRequest(BaseModel):
