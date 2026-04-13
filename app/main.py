@@ -4,13 +4,15 @@ from dotenv import load_dotenv
 import os
 import json
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
 from app.db import get_connection
+from app.audio_ai import transcribe_audio_bytes
 from app.schemas import (
     PromptCreate,
     PromptUpdate,
     PromptGenerateVariantRequest,
     PromptGenerateVariantResponse,
+    PromptGenerateVariantFromAudioResponse,
 )
 from app.prompt_ai import generate_prompt_variant
 
@@ -355,3 +357,65 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return {"text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error transcribiendo audio: {str(e)}")
+@app.post(
+    "/prompts/{prompt_id}/generate-variant-from-audio",
+    response_model=PromptGenerateVariantFromAudioResponse,
+)
+async def generate_variant_from_audio(prompt_id: int, file: UploadFile = File(...)):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, base_prompt
+        FROM prompts
+        WHERE id = %s
+    """, (prompt_id,))
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Prompt no encontrado")
+
+    source_prompt_id = row[0]
+    source_prompt_name = row[1]
+    source_prompt_text = row[2]
+
+    try:
+        content = await file.read()
+
+        transcribed_instruction = transcribe_audio_bytes(
+            filename=file.filename,
+            content=content,
+            content_type=file.content_type,
+        )
+
+        if not transcribed_instruction:
+            raise HTTPException(
+                status_code=400,
+                detail="No se ha podido obtener texto del audio"
+            )
+
+        result = generate_prompt_variant(
+            base_name=source_prompt_name,
+            base_prompt=source_prompt_text,
+            instruction=transcribed_instruction,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando variante desde audio: {str(e)}"
+        )
+
+    return {
+        "source_prompt_id": source_prompt_id,
+        "source_prompt_name": source_prompt_name,
+        "transcribed_instruction": transcribed_instruction,
+        "generated_name": result["generated_name"],
+        "generated_prompt": result["generated_prompt"],
+        "change_summary": result["change_summary"],
+    }
