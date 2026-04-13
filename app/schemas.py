@@ -23,3 +23,12 @@ class PromptGenerateVariantResponse(BaseModel):
     generated_name: str
     generated_prompt: str
     change_summary: str
+
+
+class PromptGenerateVariantFromAudioResponse(BaseModel):
+    source_prompt_id: int
+    source_prompt_name: str
+    transcribed_instruction: str
+    generated_name: str
+    generated_prompt: str
+    change_summary: str
