@@ -340,3 +340,21 @@ async def twilio_inbound(request: Request):
         )
 
     return Response(content=resp.text, media_type="application/xml")
+from fastapi import UploadFile, File
+from openai import OpenAI
+import os
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+@app.post("/audio/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    try:
+        transcript = client.audio.transcriptions.create(
+            model=os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+            file=(file.filename, await file.read(), file.content_type),
+        )
+
+        text = getattr(transcript, "text", None) or ""
+        return {"text": text.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error transcribiendo audio: {str(e)}")
