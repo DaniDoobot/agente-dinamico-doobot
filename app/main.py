@@ -492,7 +492,15 @@ async def twilio_inbound(request: Request):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt, initial_message
+        SELECT
+            id,
+            name,
+            base_prompt,
+            initial_message,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -509,6 +517,19 @@ async def twilio_inbound(request: Request):
     active_prompt_name = row[1]
     override_prompt = row[2]
     override_initial_message = row[3]
+
+    voice_slot_1 = row[4]
+    voice_slot_2 = row[5]
+    voice_slot_3 = row[6]
+    selected_voice_slot = row[7]
+
+    slot_map = {
+        1: voice_slot_1,
+        2: voice_slot_2,
+        3: voice_slot_3,
+    }
+
+    selected_voice_id = slot_map.get(selected_voice_slot) or voice_slot_1
 
     payload = {
         "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
@@ -528,6 +549,9 @@ async def twilio_inbound(request: Request):
                         "prompt": override_prompt
                     },
                     "first_message": override_initial_message
+                },
+                "tts": {
+                    "voice_id": selected_voice_id
                 }
             }
         }
