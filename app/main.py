@@ -44,6 +44,9 @@ def serialize_prompt_row(row):
         "voice_slot_2": row[10],
         "voice_slot_3": row[11],
         "selected_voice_slot": row[12],
+        "voice_slot_1_label": row[13],
+        "voice_slot_2_label": row[14],
+        "voice_slot_3_label": row[15],
     }
 
 
@@ -71,7 +74,10 @@ def list_prompts():
             voice_slot_1,
             voice_slot_2,
             voice_slot_3,
-            selected_voice_slot
+            selected_voice_slot,
+            voice_slot_1_label,
+            voice_slot_2_label,
+            voice_slot_3_label
         FROM prompts
         ORDER BY created_at DESC
     """)
@@ -102,7 +108,10 @@ def get_active_prompt():
             voice_slot_1,
             voice_slot_2,
             voice_slot_3,
-            selected_voice_slot
+            selected_voice_slot,
+            voice_slot_1_label,
+            voice_slot_2_label,
+            voice_slot_3_label
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -134,9 +143,12 @@ def create_prompt(payload: PromptCreate):
             voice_slot_1,
             voice_slot_2,
             voice_slot_3,
-            selected_voice_slot
+            selected_voice_slot,
+            voice_slot_1_label,
+            voice_slot_2_label,
+            voice_slot_3_label
         )
-        VALUES (%s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING
             id,
             name,
@@ -150,7 +162,10 @@ def create_prompt(payload: PromptCreate):
             voice_slot_1,
             voice_slot_2,
             voice_slot_3,
-            selected_voice_slot
+            selected_voice_slot,
+            voice_slot_1_label,
+            voice_slot_2_label,
+            voice_slot_3_label
     """, (
         payload.name,
         payload.base_prompt,
@@ -161,6 +176,9 @@ def create_prompt(payload: PromptCreate):
         payload.voice_slot_2,
         payload.voice_slot_3,
         payload.selected_voice_slot,
+        payload.voice_slot_1_label,
+        payload.voice_slot_2_label,
+        payload.voice_slot_3_label,
     ))
 
     row = cur.fetchone()
@@ -201,6 +219,9 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             voice_slot_2 = %s,
             voice_slot_3 = %s,
             selected_voice_slot = %s,
+            voice_slot_1_label = %s,
+            voice_slot_2_label = %s,
+            voice_slot_3_label = %s,
             updated_at = NOW()
         WHERE id = %s
         RETURNING
@@ -216,7 +237,10 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             voice_slot_1,
             voice_slot_2,
             voice_slot_3,
-            selected_voice_slot
+            selected_voice_slot,
+            voice_slot_1_label,
+            voice_slot_2_label,
+            voice_slot_3_label
     """, (
         payload.name,
         payload.base_prompt,
@@ -227,6 +251,9 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
         payload.voice_slot_2,
         payload.voice_slot_3,
         payload.selected_voice_slot,
+        payload.voice_slot_1_label,
+        payload.voice_slot_2_label,
+        payload.voice_slot_3_label,
         prompt_id,
     ))
 
