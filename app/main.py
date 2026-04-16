@@ -13,7 +13,7 @@ from app.schemas import (
     PromptGenerateVariantFromAudioResponse,
     PromptSelectVoiceSlotRequest,
 )
-from app.prompt_ai import generate_prompt_variant
+from app.prompt_ai import generate_prompt_variant, build_prompt_with_ai
 from app.audio_ai import transcribe_audio_bytes
 
 load_dotenv()
@@ -129,6 +129,19 @@ def get_active_prompt():
 
 @app.post("/prompts")
 def create_prompt(payload: PromptCreate):
+    try:
+        generated_base_prompt = build_prompt_with_ai(
+            name=payload.name,
+            base_prompt=payload.base_prompt,
+            anger_level=payload.anger_level,
+            complaint_reasons=payload.complaint_reasons,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando el prompt con IA: {str(e)}"
+        )
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -168,7 +181,7 @@ def create_prompt(payload: PromptCreate):
             voice_slot_3_label
     """, (
         payload.name,
-        payload.base_prompt,
+        generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
         payload.complaint_reasons,
@@ -207,6 +220,21 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
         conn.close()
         raise HTTPException(status_code=404, detail="Prompt no encontrado")
 
+    try:
+        generated_base_prompt = build_prompt_with_ai(
+            name=payload.name,
+            base_prompt=payload.base_prompt,
+            anger_level=payload.anger_level,
+            complaint_reasons=payload.complaint_reasons,
+        )
+    except Exception as e:
+        cur.close()
+        conn.close()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error regenerando el prompt con IA: {str(e)}"
+        )
+
     cur.execute("""
         UPDATE prompts
         SET
@@ -243,7 +271,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             voice_slot_3_label
     """, (
         payload.name,
-        payload.base_prompt,
+        generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
         payload.complaint_reasons,
