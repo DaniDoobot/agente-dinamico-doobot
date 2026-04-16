@@ -74,6 +74,8 @@ def build_prompt_with_ai(
 
     Reglas:
     - initial_message NO entra aquí y NO debe modificarse fuera de esta función.
+    - complaint_reasons se interpreta como TEXTO LIBRE de instrucción sobre
+      las quejas/frustraciones del personaje, no como lista rígida.
     - Si anger_level o complaint_reasons no vienen informados, no se fuerzan.
     - Se conserva al máximo la estructura útil del prompt original.
     """
@@ -81,15 +83,15 @@ def build_prompt_with_ai(
     model = os.getenv("OPENAI_MODEL", "gpt-5.2")
 
     anger_text = (
-        f"- Nivel de enfado inicial: {anger_level} en una escala de 0 a 5."
+        f"- Nivel de enfado inicial solicitado: {anger_level} en una escala de 0 a 5."
         if anger_level is not None
         else "- Nivel de enfado inicial: no especificado."
     )
 
     complaint_text = (
-        f"- Razones de queja que deben integrarse, si encajan: {complaint_reasons}"
+        f"- Texto libre del usuario sobre quejas/frustraciones del personaje: {complaint_reasons}"
         if complaint_reasons and complaint_reasons.strip()
-        else "- Razones de queja: no especificadas."
+        else "- Texto libre sobre quejas/frustraciones: no especificado."
     )
 
     developer_instructions = """
@@ -107,13 +109,24 @@ REGLAS IMPORTANTES:
 5. Si se informa un nivel de enfado:
    - ajústalo de forma coherente en tono, tensión inicial, resistencia, actitud defensiva
      y sistema emocional del personaje.
-6. Si se informan razones de queja:
-   - intégralas de forma natural en el conflicto, la personalidad, la evolución de la conversación
-     o las partes del prompt donde encajen mejor.
+6. Si se informa un texto libre sobre quejas o frustraciones:
+   - interprétalo como la NUEVA guía principal sobre los motivos de malestar, conflicto,
+     frustración o queja del personaje.
+   - úsalo para decidir qué quejas deben pasar a ser las principales.
+   - sustituye, reduce o elimina las quejas anteriores del prompt base cuando entren en conflicto
+     con esta nueva guía.
+   - NO acumules automáticamente las quejas anteriores.
+   - conserva solo elementos anteriores que sigan siendo claramente compatibles y secundarios.
 7. Si algún campo no se informa, no lo inventes ni lo fuerces.
 8. No expliques lo que haces.
 9. No devuelvas JSON.
 10. Devuelve EXCLUSIVAMENTE el prompt final completo.
+
+CRITERIO DE CALIDAD:
+- El resultado debe sonar como un prompt escrito con intención unitaria, no como parches sumados.
+- Debe quedar claro cuál es el conflicto principal vigente del personaje.
+- Si el usuario redefine las quejas, el prompt final no debe seguir arrastrando de forma dominante
+  las quejas antiguas incompatibles.
 """
 
     user_input = f"""
@@ -129,8 +142,9 @@ AJUSTES A TENER EN CUENTA:
 
 INSTRUCCIÓN GENERAL:
 Reconstruye el prompt base para que quede coherente con los ajustes informados, usando solo los
-que realmente estén presentes. Conserva la estructura útil del prompt original y no toques
-ningún saludo inicial fuera del prompt.
+que realmente estén presentes. Si el texto libre sobre quejas redefine el foco del conflicto,
+debe prevalecer sobre las quejas anteriores del prompt base. Conserva la estructura útil del
+prompt original y no toques ningún saludo inicial fuera del prompt.
 """
 
     response = client.responses.create(
