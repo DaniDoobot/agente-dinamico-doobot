@@ -1,20 +1,20 @@
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
 import requests
 from dotenv import load_dotenv
 import os
-import json
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
+
 from app.db import get_connection
-from app.audio_ai import transcribe_audio_bytes
 from app.schemas import (
     PromptCreate,
     PromptUpdate,
     PromptGenerateVariantRequest,
     PromptGenerateVariantResponse,
     PromptGenerateVariantFromAudioResponse,
+    PromptSelectVoiceSlotRequest,
 )
 from app.prompt_ai import generate_prompt_variant
+from app.audio_ai import transcribe_audio_bytes
 
 load_dotenv()
 
@@ -36,8 +36,14 @@ def serialize_prompt_row(row):
         "base_prompt": row[2],
         "initial_message": row[3],
         "is_active": row[4],
-        "created_at": row[5].isoformat() if row[5] else None,
-        "updated_at": row[6].isoformat() if row[6] else None,
+        "created_at": row[5].isoformat(),
+        "updated_at": row[6].isoformat(),
+        "anger_level": row[7],
+        "complaint_reasons": row[8],
+        "voice_slot_1": row[9],
+        "voice_slot_2": row[10],
+        "voice_slot_3": row[11],
+        "selected_voice_slot": row[12],
     }
 
 
@@ -52,7 +58,20 @@ def list_prompts():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt, initial_message, is_active, created_at, updated_at
+        SELECT
+            id,
+            name,
+            base_prompt,
+            initial_message,
+            is_active,
+            created_at,
+            updated_at,
+            anger_level,
+            complaint_reasons,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
         FROM prompts
         ORDER BY created_at DESC
     """)
@@ -70,7 +89,20 @@ def get_active_prompt():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, name, base_prompt, initial_message, is_active, created_at, updated_at
+        SELECT
+            id,
+            name,
+            base_prompt,
+            initial_message,
+            is_active,
+            created_at,
+            updated_at,
+            anger_level,
+            complaint_reasons,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -92,13 +124,43 @@ def create_prompt(payload: PromptCreate):
     cur = conn.cursor()
 
     cur.execute("""
-        INSERT INTO prompts (name, base_prompt, initial_message, is_active)
-        VALUES (%s, %s, %s, FALSE)
-        RETURNING id, name, base_prompt, initial_message, is_active, created_at, updated_at
+        INSERT INTO prompts (
+            name,
+            base_prompt,
+            initial_message,
+            is_active,
+            anger_level,
+            complaint_reasons,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
+        )
+        VALUES (%s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s)
+        RETURNING
+            id,
+            name,
+            base_prompt,
+            initial_message,
+            is_active,
+            created_at,
+            updated_at,
+            anger_level,
+            complaint_reasons,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
     """, (
-        payload.name.strip(),
+        payload.name,
         payload.base_prompt,
-        payload.initial_message.strip(),
+        payload.initial_message,
+        payload.anger_level,
+        payload.complaint_reasons,
+        payload.voice_slot_1,
+        payload.voice_slot_2,
+        payload.voice_slot_3,
+        payload.selected_voice_slot,
     ))
 
     row = cur.fetchone()
@@ -129,16 +191,42 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
 
     cur.execute("""
         UPDATE prompts
-        SET name = %s,
+        SET
+            name = %s,
             base_prompt = %s,
             initial_message = %s,
+            anger_level = %s,
+            complaint_reasons = %s,
+            voice_slot_1 = %s,
+            voice_slot_2 = %s,
+            voice_slot_3 = %s,
+            selected_voice_slot = %s,
             updated_at = NOW()
         WHERE id = %s
-        RETURNING id, name, base_prompt, initial_message, is_active, created_at, updated_at
+        RETURNING
+            id,
+            name,
+            base_prompt,
+            initial_message,
+            is_active,
+            created_at,
+            updated_at,
+            anger_level,
+            complaint_reasons,
+            voice_slot_1,
+            voice_slot_2,
+            voice_slot_3,
+            selected_voice_slot
     """, (
-        payload.name.strip(),
+        payload.name,
         payload.base_prompt,
-        payload.initial_message.strip(),
+        payload.initial_message,
+        payload.anger_level,
+        payload.complaint_reasons,
+        payload.voice_slot_1,
+        payload.voice_slot_2,
+        payload.voice_slot_3,
+        payload.selected_voice_slot,
         prompt_id,
     ))
 
@@ -177,6 +265,59 @@ def activate_prompt(prompt_id: int):
     conn.close()
 
     return {"ok": True, "active_prompt_id": prompt_id}
+
+
+@app.post("/prompts/{prompt_id}/select-voice-slot")
+def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, voice_slot_1, voice_slot_2, voice_slot_3
+        FROM prompts
+        WHERE id = %s
+    """, (prompt_id,))
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Prompt no encontrado")
+
+    slot_map = {
+        1: row[1],
+        2: row[2],
+        3: row[3],
+    }
+
+    selected_voice_id = slot_map.get(payload.selected_voice_slot, "")
+
+    if not selected_voice_id:
+        cur.close()
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="El slot de voz seleccionado está vacío"
+        )
+
+    cur.execute("""
+        UPDATE prompts
+        SET selected_voice_slot = %s,
+            updated_at = NOW()
+        WHERE id = %s
+    """, (payload.selected_voice_slot, prompt_id))
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {
+        "ok": True,
+        "prompt_id": prompt_id,
+        "selected_voice_slot": payload.selected_voice_slot,
+        "selected_voice_id": selected_voice_id,
+    }
 
 
 @app.delete("/prompts/{prompt_id}")
@@ -261,90 +402,6 @@ def generate_variant(prompt_id: int, payload: PromptGenerateVariantRequest):
     }
 
 
-@app.post("/twilio/inbound")
-async def twilio_inbound(request: Request):
-    form = await request.form()
-
-    from_number = form.get("From")
-    to_number = form.get("To")
-    call_sid = form.get("CallSid")
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, name, base_prompt, initial_message
-        FROM prompts
-        WHERE is_active = TRUE
-        LIMIT 1
-    """)
-    row = cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    if not row:
-        raise HTTPException(
-            status_code=400,
-            detail="No hay prompt activo en la base de datos"
-        )
-
-    active_prompt_id = row[0]
-    active_prompt_name = row[1]
-    override_prompt = row[2]
-    override_initial_message = (row[3] or "").strip()
-
-    payload = {
-        "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
-        "from_number": from_number,
-        "to_number": to_number,
-        "direction": "inbound",
-        "conversation_initiation_client_data": {
-            "type": "conversation_initiation_client_data",
-            "dynamic_variables": {
-                "call_sid": call_sid,
-                "active_prompt_id": str(active_prompt_id),
-                "active_prompt_name": active_prompt_name,
-            },
-            "conversation_config_override": {
-                "agent": {
-                    "prompt": {
-                        "prompt": override_prompt
-                    },
-                    "first_message": override_initial_message
-                }
-            }
-        }
-    }
-
-    print("ACTIVE PROMPT:", active_prompt_id, active_prompt_name)
-    print("OVERRIDE INITIAL MESSAGE:", repr(override_initial_message))
-    print("PAYLOAD ELEVENLABS:")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-    resp = requests.post(
-        "https://api.elevenlabs.io/v1/convai/twilio/register-call",
-        headers={
-            "xi-api-key": os.getenv("ELEVENLABS_API_KEY"),
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=20,
-    )
-
-    print("ELEVENLABS STATUS:", resp.status_code)
-    print("ELEVENLABS RESPONSE:", resp.text)
-
-    if not resp.ok:
-        raise HTTPException(
-            status_code=500,
-            detail=f"ElevenLabs error: {resp.text}"
-        )
-
-    return Response(content=resp.text, media_type="application/xml")
-from fastapi import UploadFile, File, HTTPException
-from app.audio_ai import transcribe_audio_bytes
-
 @app.post("/audio/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
@@ -357,6 +414,8 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return {"text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error transcribiendo audio: {str(e)}")
+
+
 @app.post(
     "/prompts/{prompt_id}/generate-variant-from-audio",
     response_model=PromptGenerateVariantFromAudioResponse,
@@ -419,3 +478,72 @@ async def generate_variant_from_audio(prompt_id: int, file: UploadFile = File(..
         "generated_prompt": result["generated_prompt"],
         "change_summary": result["change_summary"],
     }
+
+
+@app.post("/twilio/inbound")
+async def twilio_inbound(request: Request):
+    form = await request.form()
+
+    from_number = form.get("From")
+    to_number = form.get("To")
+    call_sid = form.get("CallSid")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, base_prompt, initial_message
+        FROM prompts
+        WHERE is_active = TRUE
+        LIMIT 1
+    """)
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=400, detail="No hay prompt activo en la base de datos")
+
+    active_prompt_id = row[0]
+    active_prompt_name = row[1]
+    override_prompt = row[2]
+    override_initial_message = row[3]
+
+    payload = {
+        "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
+        "from_number": from_number,
+        "to_number": to_number,
+        "direction": "inbound",
+        "conversation_initiation_client_data": {
+            "type": "conversation_initiation_client_data",
+            "dynamic_variables": {
+                "call_sid": call_sid,
+                "active_prompt_id": str(active_prompt_id),
+                "active_prompt_name": active_prompt_name,
+            },
+            "conversation_config_override": {
+                "agent": {
+                    "prompt": {
+                        "prompt": override_prompt
+                    },
+                    "first_message": override_initial_message
+                }
+            }
+        }
+    }
+
+    resp = requests.post(
+        "https://api.elevenlabs.io/v1/convai/twilio/register-call",
+        headers={
+            "xi-api-key": os.getenv("ELEVENLABS_API_KEY"),
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+
+    if not resp.ok:
+        raise HTTPException(status_code=500, detail=f"ElevenLabs error: {resp.text}")
+
+    return Response(content=resp.text, media_type="application/xml")
