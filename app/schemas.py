@@ -47,6 +47,31 @@ class PromptGenerateVariantFromAudioResponse(BaseModel):
 class PromptSelectVoiceSlotRequest(BaseModel):
     selected_voice_slot: int = Field(..., ge=1, le=3)
 
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: dict
+
+
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+    role: str = Field(..., pattern="^(admin|user|visitor)$")
+
+
+class UserUpdate(BaseModel):
+    email: str = Field(..., min_length=3)
+    role: str = Field(..., pattern="^(admin|user|visitor)$")
+    is_active: bool
+
+
+class UserDeactivateRequest(BaseModel):
+    is_active: bool = False
 
 class VoiceSettingUpdate(BaseModel):
     label: str = Field(..., min_length=0)
