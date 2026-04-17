@@ -9,15 +9,6 @@ class PromptCreate(BaseModel):
     anger_level: int = Field(0, ge=0, le=5)
     complaint_reasons: str = Field("", min_length=0)
 
-    voice_slot_1: str = Field(..., min_length=1)
-    voice_slot_1_label: str = Field("Voz principal", min_length=1)
-
-    voice_slot_2: str = ""
-    voice_slot_2_label: str = ""
-
-    voice_slot_3: str = ""
-    voice_slot_3_label: str = ""
-
     selected_voice_slot: int = Field(1, ge=1, le=3)
 
 
@@ -28,15 +19,6 @@ class PromptUpdate(BaseModel):
 
     anger_level: int = Field(..., ge=0, le=5)
     complaint_reasons: str = Field("", min_length=0)
-
-    voice_slot_1: str = Field(..., min_length=1)
-    voice_slot_1_label: str = Field(..., min_length=1)
-
-    voice_slot_2: str = ""
-    voice_slot_2_label: str = ""
-
-    voice_slot_3: str = ""
-    voice_slot_3_label: str = ""
 
     selected_voice_slot: int = Field(..., ge=1, le=3)
 
@@ -64,3 +46,8 @@ class PromptGenerateVariantFromAudioResponse(BaseModel):
 
 class PromptSelectVoiceSlotRequest(BaseModel):
     selected_voice_slot: int = Field(..., ge=1, le=3)
+
+
+class VoiceSettingUpdate(BaseModel):
+    label: str = Field(..., min_length=0)
+    voice_id: str = Field(..., min_length=0)
