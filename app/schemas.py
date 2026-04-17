@@ -7,7 +7,7 @@ class PromptCreate(BaseModel):
     initial_message: str = Field(..., min_length=1)
 
     anger_level: int = Field(0, ge=0, le=5)
-    complaint_reasons: str = Field("", min_length=0)
+    prompt_change_instructions: str = Field("", min_length=0)
 
     selected_voice_slot: int = Field(1, ge=1, le=3)
 
@@ -18,7 +18,7 @@ class PromptUpdate(BaseModel):
     initial_message: str = Field(..., min_length=1)
 
     anger_level: int = Field(..., ge=0, le=5)
-    complaint_reasons: str = Field("", min_length=0)
+    prompt_change_instructions: str = Field("", min_length=0)
 
     selected_voice_slot: int = Field(..., ge=1, le=3)
 
