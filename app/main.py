@@ -12,6 +12,7 @@ from app.schemas import (
     PromptGenerateVariantResponse,
     PromptGenerateVariantFromAudioResponse,
     PromptSelectVoiceSlotRequest,
+    VoiceSettingUpdate,
 )
 from app.prompt_ai import generate_prompt_variant, build_prompt_with_ai
 from app.audio_ai import transcribe_audio_bytes
@@ -29,7 +30,53 @@ app.add_middleware(
 )
 
 
+def get_voice_settings_map():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT slot_number, voice_id, label
+        FROM voice_settings
+        ORDER BY slot_number ASC
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    voice_map = {}
+    for row in rows:
+        voice_map[row[0]] = {
+            "slot_number": row[0],
+            "voice_id": row[1],
+            "label": row[2],
+        }
+
+    return voice_map
+
+
+def get_selected_voice_info(selected_voice_slot: int):
+    voice_map = get_voice_settings_map()
+
+    selected = voice_map.get(selected_voice_slot)
+    fallback = voice_map.get(1)
+
+    if selected and selected["voice_id"]:
+        return selected
+
+    if fallback and fallback["voice_id"]:
+        return fallback
+
+    raise HTTPException(
+        status_code=500,
+        detail="No hay una voz global válida configurada"
+    )
+
+
 def serialize_prompt_row(row):
+    selected_voice_slot = row[9]
+    selected_voice = get_selected_voice_info(selected_voice_slot)
+
     return {
         "id": row[0],
         "name": row[1],
@@ -40,19 +87,97 @@ def serialize_prompt_row(row):
         "updated_at": row[6].isoformat(),
         "anger_level": row[7],
         "complaint_reasons": row[8],
-        "voice_slot_1": row[9],
-        "voice_slot_2": row[10],
-        "voice_slot_3": row[11],
-        "selected_voice_slot": row[12],
-        "voice_slot_1_label": row[13],
-        "voice_slot_2_label": row[14],
-        "voice_slot_3_label": row[15],
+        "selected_voice_slot": row[9],
+        "selected_voice_label": selected_voice["label"],
+        "selected_voice_id": selected_voice["voice_id"],
     }
 
 
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/voice-settings")
+def list_voice_settings():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT slot_number, voice_id, label
+        FROM voice_settings
+        ORDER BY slot_number ASC
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "slot_number": row[0],
+            "voice_id": row[1],
+            "label": row[2],
+        }
+        for row in rows
+    ]
+
+
+@app.put("/voice-settings/{slot_number}")
+def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
+    if slot_number not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="Slot de voz inválido")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT slot_number, voice_id, label
+        FROM voice_settings
+        WHERE slot_number = %s
+    """, (slot_number,))
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Slot de voz no encontrado")
+
+    # Regla de producto:
+    # slot 1:
+    # - voice_id no editable
+    # - label sí editable
+    if slot_number == 1:
+        new_voice_id = row[1]
+        new_label = payload.label if payload.label.strip() else row[2]
+    else:
+        new_voice_id = payload.voice_id.strip()
+        new_label = payload.label.strip()
+
+    if slot_number == 1 and not new_voice_id:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="La voz principal debe tener voice_id")
+
+    cur.execute("""
+        UPDATE voice_settings
+        SET voice_id = %s,
+            label = %s
+        WHERE slot_number = %s
+        RETURNING slot_number, voice_id, label
+    """, (new_voice_id, new_label, slot_number))
+
+    updated = cur.fetchone()
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {
+        "slot_number": updated[0],
+        "voice_id": updated[1],
+        "label": updated[2],
+    }
 
 
 @app.get("/prompts")
@@ -71,13 +196,7 @@ def list_prompts():
             updated_at,
             anger_level,
             complaint_reasons,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
-            selected_voice_slot,
-            voice_slot_1_label,
-            voice_slot_2_label,
-            voice_slot_3_label
+            selected_voice_slot
         FROM prompts
         ORDER BY created_at DESC
     """)
@@ -105,13 +224,7 @@ def get_active_prompt():
             updated_at,
             anger_level,
             complaint_reasons,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
-            selected_voice_slot,
-            voice_slot_1_label,
-            voice_slot_2_label,
-            voice_slot_3_label
+            selected_voice_slot
         FROM prompts
         WHERE is_active = TRUE
         LIMIT 1
@@ -153,15 +266,9 @@ def create_prompt(payload: PromptCreate):
             is_active,
             anger_level,
             complaint_reasons,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
-            selected_voice_slot,
-            voice_slot_1_label,
-            voice_slot_2_label,
-            voice_slot_3_label
+            selected_voice_slot
         )
-        VALUES (%s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, FALSE, %s, %s, %s)
         RETURNING
             id,
             name,
@@ -172,26 +279,14 @@ def create_prompt(payload: PromptCreate):
             updated_at,
             anger_level,
             complaint_reasons,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
-            selected_voice_slot,
-            voice_slot_1_label,
-            voice_slot_2_label,
-            voice_slot_3_label
+            selected_voice_slot
     """, (
         payload.name,
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
         payload.complaint_reasons,
-        payload.voice_slot_1,
-        payload.voice_slot_2,
-        payload.voice_slot_3,
         payload.selected_voice_slot,
-        payload.voice_slot_1_label,
-        payload.voice_slot_2_label,
-        payload.voice_slot_3_label,
     ))
 
     row = cur.fetchone()
@@ -243,13 +338,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             initial_message = %s,
             anger_level = %s,
             complaint_reasons = %s,
-            voice_slot_1 = %s,
-            voice_slot_2 = %s,
-            voice_slot_3 = %s,
             selected_voice_slot = %s,
-            voice_slot_1_label = %s,
-            voice_slot_2_label = %s,
-            voice_slot_3_label = %s,
             updated_at = NOW()
         WHERE id = %s
         RETURNING
@@ -262,26 +351,14 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             updated_at,
             anger_level,
             complaint_reasons,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
-            selected_voice_slot,
-            voice_slot_1_label,
-            voice_slot_2_label,
-            voice_slot_3_label
+            selected_voice_slot
     """, (
         payload.name,
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
         payload.complaint_reasons,
-        payload.voice_slot_1,
-        payload.voice_slot_2,
-        payload.voice_slot_3,
         payload.selected_voice_slot,
-        payload.voice_slot_1_label,
-        payload.voice_slot_2_label,
-        payload.voice_slot_3_label,
         prompt_id,
     ))
 
@@ -324,11 +401,16 @@ def activate_prompt(prompt_id: int):
 
 @app.post("/prompts/{prompt_id}/select-voice-slot")
 def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
+    if payload.selected_voice_slot not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="Slot de voz inválido")
+
+    voice_info = get_selected_voice_info(payload.selected_voice_slot)
+
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, voice_slot_1, voice_slot_2, voice_slot_3
+        SELECT id
         FROM prompts
         WHERE id = %s
     """, (prompt_id,))
@@ -338,22 +420,6 @@ def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
         cur.close()
         conn.close()
         raise HTTPException(status_code=404, detail="Prompt no encontrado")
-
-    slot_map = {
-        1: row[1],
-        2: row[2],
-        3: row[3],
-    }
-
-    selected_voice_id = slot_map.get(payload.selected_voice_slot, "")
-
-    if not selected_voice_id:
-        cur.close()
-        conn.close()
-        raise HTTPException(
-            status_code=400,
-            detail="El slot de voz seleccionado está vacío"
-        )
 
     cur.execute("""
         UPDATE prompts
@@ -371,7 +437,8 @@ def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
         "ok": True,
         "prompt_id": prompt_id,
         "selected_voice_slot": payload.selected_voice_slot,
-        "selected_voice_id": selected_voice_id,
+        "selected_voice_id": voice_info["voice_id"],
+        "selected_voice_label": voice_info["label"],
     }
 
 
@@ -552,9 +619,6 @@ async def twilio_inbound(request: Request):
             name,
             base_prompt,
             initial_message,
-            voice_slot_1,
-            voice_slot_2,
-            voice_slot_3,
             selected_voice_slot
         FROM prompts
         WHERE is_active = TRUE
@@ -572,19 +636,10 @@ async def twilio_inbound(request: Request):
     active_prompt_name = row[1]
     override_prompt = row[2]
     override_initial_message = row[3]
+    selected_voice_slot = row[4]
 
-    voice_slot_1 = row[4]
-    voice_slot_2 = row[5]
-    voice_slot_3 = row[6]
-    selected_voice_slot = row[7]
-
-    slot_map = {
-        1: voice_slot_1,
-        2: voice_slot_2,
-        3: voice_slot_3,
-    }
-
-    selected_voice_id = slot_map.get(selected_voice_slot) or voice_slot_1
+    selected_voice = get_selected_voice_info(selected_voice_slot)
+    selected_voice_id = selected_voice["voice_id"]
 
     payload = {
         "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
