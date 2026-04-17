@@ -1,4 +1,13 @@
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    File,
+    Depends,
+    Header,
+)
 import requests
 from dotenv import load_dotenv
 import os
@@ -13,9 +22,14 @@ from app.schemas import (
     PromptGenerateVariantFromAudioResponse,
     PromptSelectVoiceSlotRequest,
     VoiceSettingUpdate,
+    LoginRequest,
+    UserCreate,
+    UserUpdate,
+    UserDeactivateRequest,
 )
 from app.prompt_ai import generate_prompt_variant, build_prompt_with_ai
 from app.audio_ai import transcribe_audio_bytes
+from app.auth_utils import verify_password, create_access_token, decode_access_token
 
 load_dotenv()
 
@@ -29,6 +43,119 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# =========================
+# AUTH / USERS / AUDIT
+# =========================
+
+def log_audit_event(
+    *,
+    user_id: int | None,
+    action: str,
+    entity_type: str,
+    entity_id: str | None = None,
+    details_json: dict | None = None,
+):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details_json)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (
+            user_id,
+            action,
+            entity_type,
+            entity_id,
+            details_json or {},
+        ),
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_user_by_id(user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, email, role, is_active, created_at, updated_at
+        FROM users
+        WHERE id = %s
+        """,
+        (user_id,),
+    )
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "email": row[1],
+        "role": row[2],
+        "is_active": row[3],
+        "created_at": row[4].isoformat(),
+        "updated_at": row[5].isoformat(),
+    }
+
+
+def parse_bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Falta cabecera Authorization")
+
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Authorization debe ser Bearer token")
+
+    return parts[1].strip()
+
+
+def get_current_user(authorization: str | None = Header(default=None)):
+    token = parse_bearer_token(authorization)
+    payload = decode_access_token(token)
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    try:
+        user_id = int(sub)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+
+    if not user["is_active"]:
+        raise HTTPException(status_code=403, detail="Usuario desactivado")
+
+    return user
+
+
+def require_roles(*allowed_roles):
+    def dependency(current_user=Depends(get_current_user)):
+        if current_user["role"] not in allowed_roles:
+            raise HTTPException(status_code=403, detail="No tienes permisos para esta acción")
+        return current_user
+    return dependency
+
+
+# =========================
+# VOICES
+# =========================
 
 def get_voice_settings_map():
     conn = get_connection()
@@ -73,6 +200,10 @@ def get_selected_voice_info(selected_voice_slot: int):
     )
 
 
+# =========================
+# PROMPTS
+# =========================
+
 def serialize_prompt_row(row):
     selected_voice_slot = row[9]
     selected_voice = get_selected_voice_info(selected_voice_slot)
@@ -93,13 +224,272 @@ def serialize_prompt_row(row):
     }
 
 
+# =========================
+# BASIC
+# =========================
+
 @app.get("/health")
 def health():
     return {"ok": True}
 
 
+# =========================
+# AUTH ENDPOINTS
+# =========================
+
+@app.post("/auth/login")
+def login(payload: LoginRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, email, password_hash, role, is_active
+        FROM users
+        WHERE email = %s
+        """,
+        (payload.email,),
+    )
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    user_id = row[0]
+    email = row[1]
+    password_hash = row[2]
+    role = row[3]
+    is_active = row[4]
+
+    if not is_active:
+        raise HTTPException(status_code=403, detail="Usuario desactivado")
+
+    if not verify_password(payload.password, password_hash):
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    access_token = create_access_token(user_id=user_id, email=email, role=role)
+
+    log_audit_event(
+        user_id=user_id,
+        action="LOGIN_SUCCESS",
+        entity_type="auth",
+        entity_id=str(user_id),
+        details_json={"email": email, "role": role},
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user_id,
+            "email": email,
+            "role": role,
+            "is_active": is_active,
+        },
+    }
+
+
+@app.get("/auth/me")
+def auth_me(current_user=Depends(get_current_user)):
+    return current_user
+
+
+# =========================
+# USER ADMIN
+# =========================
+
+@app.get("/users")
+def list_users(current_user=Depends(require_roles("admin"))):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, email, role, is_active, created_at, updated_at
+        FROM users
+        ORDER BY created_at DESC
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "email": row[1],
+            "role": row[2],
+            "is_active": row[3],
+            "created_at": row[4].isoformat(),
+            "updated_at": row[5].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+@app.post("/users")
+def create_user(payload: UserCreate, current_user=Depends(require_roles("admin"))):
+    from app.auth_utils import hash_password
+
+    password_hash = hash_password(payload.password)
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            INSERT INTO users (email, password_hash, role, is_active)
+            VALUES (%s, %s, %s, TRUE)
+            RETURNING id, email, role, is_active, created_at, updated_at
+        """, (payload.email, password_hash, payload.role))
+
+        row = cur.fetchone()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"No se pudo crear el usuario: {str(e)}")
+
+    cur.close()
+    conn.close()
+
+    log_audit_event(
+        user_id=current_user["id"],
+        action="USER_CREATED",
+        entity_type="user",
+        entity_id=str(row[0]),
+        details_json={"email": row[1], "role": row[2]},
+    )
+
+    return {
+        "id": row[0],
+        "email": row[1],
+        "role": row[2],
+        "is_active": row[3],
+        "created_at": row[4].isoformat(),
+        "updated_at": row[5].isoformat(),
+    }
+
+
+@app.put("/users/{user_id}")
+def update_user(user_id: int, payload: UserUpdate, current_user=Depends(require_roles("admin"))):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id
+        FROM users
+        WHERE id = %s
+    """, (user_id,))
+    existing = cur.fetchone()
+
+    if not existing:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    try:
+        cur.execute("""
+            UPDATE users
+            SET email = %s,
+                role = %s,
+                is_active = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, email, role, is_active, created_at, updated_at
+        """, (payload.email, payload.role, payload.is_active, user_id))
+
+        row = cur.fetchone()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"No se pudo actualizar el usuario: {str(e)}")
+
+    cur.close()
+    conn.close()
+
+    log_audit_event(
+        user_id=current_user["id"],
+        action="USER_UPDATED",
+        entity_type="user",
+        entity_id=str(row[0]),
+        details_json={"email": row[1], "role": row[2], "is_active": row[3]},
+    )
+
+    return {
+        "id": row[0],
+        "email": row[1],
+        "role": row[2],
+        "is_active": row[3],
+        "created_at": row[4].isoformat(),
+        "updated_at": row[5].isoformat(),
+    }
+
+
+@app.post("/users/{user_id}/deactivate")
+def deactivate_user(
+    user_id: int,
+    payload: UserDeactivateRequest,
+    current_user=Depends(require_roles("admin")),
+):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, email, role, is_active
+        FROM users
+        WHERE id = %s
+    """, (user_id,))
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    cur.execute("""
+        UPDATE users
+        SET is_active = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        RETURNING id, email, role, is_active, created_at, updated_at
+    """, (payload.is_active, user_id))
+
+    updated = cur.fetchone()
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    log_audit_event(
+        user_id=current_user["id"],
+        action="USER_DEACTIVATED" if payload.is_active is False else "USER_REACTIVATED",
+        entity_type="user",
+        entity_id=str(updated[0]),
+        details_json={"email": updated[1], "role": updated[2], "is_active": updated[3]},
+    )
+
+    return {
+        "id": updated[0],
+        "email": updated[1],
+        "role": updated[2],
+        "is_active": updated[3],
+        "created_at": updated[4].isoformat(),
+        "updated_at": updated[5].isoformat(),
+    }
+
+
+# =========================
+# VOICE SETTINGS
+# =========================
+
 @app.get("/voice-settings")
-def list_voice_settings():
+def list_voice_settings(current_user=Depends(require_roles("admin", "user", "visitor"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -124,7 +514,11 @@ def list_voice_settings():
 
 
 @app.put("/voice-settings/{slot_number}")
-def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
+def update_voice_setting(
+    slot_number: int,
+    payload: VoiceSettingUpdate,
+    current_user=Depends(require_roles("admin", "user")),
+):
     if slot_number not in (1, 2, 3):
         raise HTTPException(status_code=400, detail="Slot de voz inválido")
 
@@ -143,9 +537,6 @@ def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
         conn.close()
         raise HTTPException(status_code=404, detail="Slot de voz no encontrado")
 
-    # Slot 1:
-    # - voice_id no editable
-    # - label sí editable
     if slot_number == 1:
         new_voice_id = row[1]
         new_label = payload.label if payload.label.strip() else row[2]
@@ -172,6 +563,14 @@ def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
     cur.close()
     conn.close()
 
+    log_audit_event(
+        user_id=current_user["id"],
+        action="VOICE_SETTING_UPDATED",
+        entity_type="voice_setting",
+        entity_id=str(updated[0]),
+        details_json={"slot_number": updated[0], "voice_id": updated[1], "label": updated[2]},
+    )
+
     return {
         "slot_number": updated[0],
         "voice_id": updated[1],
@@ -179,8 +578,12 @@ def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
     }
 
 
+# =========================
+# PROMPTS
+# =========================
+
 @app.get("/prompts")
-def list_prompts():
+def list_prompts(current_user=Depends(require_roles("admin", "user", "visitor"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -208,7 +611,7 @@ def list_prompts():
 
 
 @app.get("/prompts/active")
-def get_active_prompt():
+def get_active_prompt(current_user=Depends(require_roles("admin", "user", "visitor"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -240,7 +643,7 @@ def get_active_prompt():
 
 
 @app.post("/prompts")
-def create_prompt(payload: PromptCreate):
+def create_prompt(payload: PromptCreate, current_user=Depends(require_roles("admin", "user", "visitor"))):
     try:
         generated_base_prompt = build_prompt_with_ai(
             name=payload.name,
@@ -294,11 +697,21 @@ def create_prompt(payload: PromptCreate):
     cur.close()
     conn.close()
 
-    return serialize_prompt_row(row)
+    serialized = serialize_prompt_row(row)
+
+    log_audit_event(
+        user_id=current_user["id"],
+        action="PROMPT_CREATED",
+        entity_type="prompt",
+        entity_id=str(serialized["id"]),
+        details_json={"name": serialized["name"]},
+    )
+
+    return serialized
 
 
 @app.put("/prompts/{prompt_id}")
-def update_prompt(prompt_id: int, payload: PromptUpdate):
+def update_prompt(prompt_id: int, payload: PromptUpdate, current_user=Depends(require_roles("admin", "user", "visitor"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -367,11 +780,21 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
     cur.close()
     conn.close()
 
-    return serialize_prompt_row(row)
+    serialized = serialize_prompt_row(row)
+
+    log_audit_event(
+        user_id=current_user["id"],
+        action="PROMPT_UPDATED",
+        entity_type="prompt",
+        entity_id=str(serialized["id"]),
+        details_json={"name": serialized["name"]},
+    )
+
+    return serialized
 
 
 @app.post("/prompts/{prompt_id}/activate")
-def activate_prompt(prompt_id: int):
+def activate_prompt(prompt_id: int, current_user=Depends(require_roles("admin", "user", "visitor"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -395,11 +818,23 @@ def activate_prompt(prompt_id: int):
     cur.close()
     conn.close()
 
+    log_audit_event(
+        user_id=current_user["id"],
+        action="PROMPT_ACTIVATED",
+        entity_type="prompt",
+        entity_id=str(prompt_id),
+        details_json={"prompt_id": prompt_id},
+    )
+
     return {"ok": True, "active_prompt_id": prompt_id}
 
 
 @app.post("/prompts/{prompt_id}/select-voice-slot")
-def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
+def select_voice_slot(
+    prompt_id: int,
+    payload: PromptSelectVoiceSlotRequest,
+    current_user=Depends(require_roles("admin", "user", "visitor")),
+):
     if payload.selected_voice_slot not in (1, 2, 3):
         raise HTTPException(status_code=400, detail="Slot de voz inválido")
 
@@ -432,6 +867,19 @@ def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
     cur.close()
     conn.close()
 
+    log_audit_event(
+        user_id=current_user["id"],
+        action="PROMPT_VOICE_SELECTED",
+        entity_type="prompt",
+        entity_id=str(prompt_id),
+        details_json={
+            "prompt_id": prompt_id,
+            "selected_voice_slot": payload.selected_voice_slot,
+            "selected_voice_label": voice_info["label"],
+            "selected_voice_id": voice_info["voice_id"],
+        },
+    )
+
     return {
         "ok": True,
         "prompt_id": prompt_id,
@@ -442,7 +890,7 @@ def select_voice_slot(prompt_id: int, payload: PromptSelectVoiceSlotRequest):
 
 
 @app.delete("/prompts/{prompt_id}")
-def delete_prompt(prompt_id: int):
+def delete_prompt(prompt_id: int, current_user=Depends(require_roles("admin", "user"))):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -474,14 +922,30 @@ def delete_prompt(prompt_id: int):
     cur.close()
     conn.close()
 
+    log_audit_event(
+        user_id=current_user["id"],
+        action="PROMPT_DELETED",
+        entity_type="prompt",
+        entity_id=str(prompt_id),
+        details_json={"prompt_id": prompt_id},
+    )
+
     return {"ok": True, "deleted_prompt_id": prompt_id}
 
+
+# =========================
+# AI / AUDIO
+# =========================
 
 @app.post(
     "/prompts/{prompt_id}/generate-variant",
     response_model=PromptGenerateVariantResponse,
 )
-def generate_variant(prompt_id: int, payload: PromptGenerateVariantRequest):
+def generate_variant(
+    prompt_id: int,
+    payload: PromptGenerateVariantRequest,
+    current_user=Depends(require_roles("admin", "user", "visitor")),
+):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -524,7 +988,10 @@ def generate_variant(prompt_id: int, payload: PromptGenerateVariantRequest):
 
 
 @app.post("/audio/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    current_user=Depends(require_roles("admin", "user", "visitor")),
+):
     try:
         content = await file.read()
         text = transcribe_audio_bytes(
@@ -541,7 +1008,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
     "/prompts/{prompt_id}/generate-variant-from-audio",
     response_model=PromptGenerateVariantFromAudioResponse,
 )
-async def generate_variant_from_audio(prompt_id: int, file: UploadFile = File(...)):
+async def generate_variant_from_audio(
+    prompt_id: int,
+    file: UploadFile = File(...),
+    current_user=Depends(require_roles("admin", "user", "visitor")),
+):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -600,6 +1071,10 @@ async def generate_variant_from_audio(prompt_id: int, file: UploadFile = File(..
         "change_summary": result["change_summary"],
     }
 
+
+# =========================
+# TWILIO / ELEVENLABS
+# =========================
 
 @app.post("/twilio/inbound")
 async def twilio_inbound(request: Request):
