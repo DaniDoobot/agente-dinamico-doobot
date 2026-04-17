@@ -86,7 +86,7 @@ def serialize_prompt_row(row):
         "created_at": row[5].isoformat(),
         "updated_at": row[6].isoformat(),
         "anger_level": row[7],
-        "complaint_reasons": row[8],
+        "prompt_change_instructions": row[8],
         "selected_voice_slot": row[9],
         "selected_voice_label": selected_voice["label"],
         "selected_voice_id": selected_voice["voice_id"],
@@ -143,8 +143,7 @@ def update_voice_setting(slot_number: int, payload: VoiceSettingUpdate):
         conn.close()
         raise HTTPException(status_code=404, detail="Slot de voz no encontrado")
 
-    # Regla de producto:
-    # slot 1:
+    # Slot 1:
     # - voice_id no editable
     # - label sí editable
     if slot_number == 1:
@@ -195,7 +194,7 @@ def list_prompts():
             created_at,
             updated_at,
             anger_level,
-            complaint_reasons,
+            prompt_change_instructions,
             selected_voice_slot
         FROM prompts
         ORDER BY created_at DESC
@@ -223,7 +222,7 @@ def get_active_prompt():
             created_at,
             updated_at,
             anger_level,
-            complaint_reasons,
+            prompt_change_instructions,
             selected_voice_slot
         FROM prompts
         WHERE is_active = TRUE
@@ -247,7 +246,7 @@ def create_prompt(payload: PromptCreate):
             name=payload.name,
             base_prompt=payload.base_prompt,
             anger_level=payload.anger_level,
-            complaint_reasons=payload.complaint_reasons,
+            prompt_change_instructions=payload.prompt_change_instructions,
         )
     except Exception as e:
         raise HTTPException(
@@ -265,7 +264,7 @@ def create_prompt(payload: PromptCreate):
             initial_message,
             is_active,
             anger_level,
-            complaint_reasons,
+            prompt_change_instructions,
             selected_voice_slot
         )
         VALUES (%s, %s, %s, FALSE, %s, %s, %s)
@@ -278,14 +277,14 @@ def create_prompt(payload: PromptCreate):
             created_at,
             updated_at,
             anger_level,
-            complaint_reasons,
+            prompt_change_instructions,
             selected_voice_slot
     """, (
         payload.name,
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        payload.complaint_reasons,
+        payload.prompt_change_instructions,
         payload.selected_voice_slot,
     ))
 
@@ -320,7 +319,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             name=payload.name,
             base_prompt=payload.base_prompt,
             anger_level=payload.anger_level,
-            complaint_reasons=payload.complaint_reasons,
+            prompt_change_instructions=payload.prompt_change_instructions,
         )
     except Exception as e:
         cur.close()
@@ -337,7 +336,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             base_prompt = %s,
             initial_message = %s,
             anger_level = %s,
-            complaint_reasons = %s,
+            prompt_change_instructions = %s,
             selected_voice_slot = %s,
             updated_at = NOW()
         WHERE id = %s
@@ -350,14 +349,14 @@ def update_prompt(prompt_id: int, payload: PromptUpdate):
             created_at,
             updated_at,
             anger_level,
-            complaint_reasons,
+            prompt_change_instructions,
             selected_voice_slot
     """, (
         payload.name,
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        payload.complaint_reasons,
+        payload.prompt_change_instructions,
         payload.selected_voice_slot,
         prompt_id,
     ))
