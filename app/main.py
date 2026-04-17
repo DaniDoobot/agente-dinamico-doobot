@@ -12,7 +12,7 @@ import requests
 from dotenv import load_dotenv
 import os
 from fastapi.middleware.cors import CORSMiddleware
-
+from psycopg2.extras import Json
 from app.db import get_connection
 from app.schemas import (
     PromptCreate,
@@ -69,7 +69,7 @@ def log_audit_event(
             action,
             entity_type,
             entity_id,
-            details_json or {},
+            Json(details_json or {}),
         ),
     )
 
