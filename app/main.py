@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2.extras import Json
+
 from app.db import get_connection
 from app.schemas import (
     PromptCreate,
@@ -383,7 +384,7 @@ def update_user(user_id: int, payload: UserUpdate, current_user=Depends(require_
         SELECT id
         FROM users
         WHERE id = %s
-    """, (user_id,))
+        """, (user_id,))
     existing = cur.fetchone()
 
     if not existing:
@@ -687,7 +688,7 @@ def create_prompt(payload: PromptCreate, current_user=Depends(require_roles("adm
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        payload.prompt_change_instructions,
+        "",  # limpiamos instrucciones tras usarlas
         payload.selected_voice_slot,
     ))
 
@@ -769,7 +770,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate, current_user=Depends(re
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        payload.prompt_change_instructions,
+        "",  # limpiamos instrucciones tras usarlas
         payload.selected_voice_slot,
         prompt_id,
     ))
