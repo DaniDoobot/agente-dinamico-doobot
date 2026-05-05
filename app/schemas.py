@@ -50,7 +50,7 @@ class PromptSelectVoiceSlotRequest(BaseModel):
 
 class VoiceSettingUpdate(BaseModel):
     label: str = Field(..., min_length=0)
-    voice_id: str = Field(..., min_length=0)
+    gemini_voice_name: str = Field(..., min_length=0)
 
 
 class LoginRequest(BaseModel):
