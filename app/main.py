@@ -155,7 +155,7 @@ def require_roles(*allowed_roles):
 
 
 # =========================
-# VOICES
+# VOICES (GEMINI)
 # =========================
 
 def get_voice_settings_map():
@@ -163,7 +163,7 @@ def get_voice_settings_map():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT slot_number, voice_id, label
+        SELECT slot_number, gemini_voice_name, label
         FROM voice_settings
         ORDER BY slot_number ASC
     """)
@@ -176,7 +176,7 @@ def get_voice_settings_map():
     for row in rows:
         voice_map[row[0]] = {
             "slot_number": row[0],
-            "voice_id": row[1],
+            "gemini_voice_name": row[1],
             "label": row[2],
         }
 
@@ -189,15 +189,15 @@ def get_selected_voice_info(selected_voice_slot: int):
     selected = voice_map.get(selected_voice_slot)
     fallback = voice_map.get(1)
 
-    if selected and selected["voice_id"]:
+    if selected and selected["gemini_voice_name"]:
         return selected
 
-    if fallback and fallback["voice_id"]:
+    if fallback and fallback["gemini_voice_name"]:
         return fallback
 
     raise HTTPException(
         status_code=500,
-        detail="No hay una voz global válida configurada"
+        detail="No hay una voz global Gemini válida configurada"
     )
 
 
@@ -221,7 +221,7 @@ def serialize_prompt_row(row):
         "prompt_change_instructions": row[8],
         "selected_voice_slot": row[9],
         "selected_voice_label": selected_voice["label"],
-        "selected_voice_id": selected_voice["voice_id"],
+        "selected_gemini_voice_name": selected_voice["gemini_voice_name"],
     }
 
 
@@ -486,7 +486,7 @@ def deactivate_user(
 
 
 # =========================
-# VOICE SETTINGS
+# VOICE SETTINGS (GEMINI)
 # =========================
 
 @app.get("/voice-settings")
@@ -495,7 +495,7 @@ def list_voice_settings(current_user=Depends(require_roles("admin", "user", "vis
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT slot_number, voice_id, label
+        SELECT slot_number, gemini_voice_name, label
         FROM voice_settings
         ORDER BY slot_number ASC
     """)
@@ -507,7 +507,7 @@ def list_voice_settings(current_user=Depends(require_roles("admin", "user", "vis
     return [
         {
             "slot_number": row[0],
-            "voice_id": row[1],
+            "gemini_voice_name": row[1],
             "label": row[2],
         }
         for row in rows
@@ -527,7 +527,7 @@ def update_voice_setting(
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT slot_number, voice_id, label
+        SELECT slot_number, gemini_voice_name, label
         FROM voice_settings
         WHERE slot_number = %s
     """, (slot_number,))
@@ -539,24 +539,24 @@ def update_voice_setting(
         raise HTTPException(status_code=404, detail="Slot de voz no encontrado")
 
     if slot_number == 1:
-        new_voice_id = row[1]
+        new_gemini_voice_name = row[1]
         new_label = payload.label if payload.label.strip() else row[2]
     else:
-        new_voice_id = payload.voice_id.strip()
+        new_gemini_voice_name = payload.gemini_voice_name.strip()
         new_label = payload.label.strip()
 
-    if slot_number == 1 and not new_voice_id:
+    if slot_number == 1 and not new_gemini_voice_name:
         cur.close()
         conn.close()
-        raise HTTPException(status_code=400, detail="La voz principal debe tener voice_id")
+        raise HTTPException(status_code=400, detail="La voz principal debe tener gemini_voice_name")
 
     cur.execute("""
         UPDATE voice_settings
-        SET voice_id = %s,
+        SET gemini_voice_name = %s,
             label = %s
         WHERE slot_number = %s
-        RETURNING slot_number, voice_id, label
-    """, (new_voice_id, new_label, slot_number))
+        RETURNING slot_number, gemini_voice_name, label
+    """, (new_gemini_voice_name, new_label, slot_number))
 
     updated = cur.fetchone()
     conn.commit()
@@ -569,12 +569,16 @@ def update_voice_setting(
         action="VOICE_SETTING_UPDATED",
         entity_type="voice_setting",
         entity_id=str(updated[0]),
-        details_json={"slot_number": updated[0], "voice_id": updated[1], "label": updated[2]},
+        details_json={
+            "slot_number": updated[0],
+            "gemini_voice_name": updated[1],
+            "label": updated[2],
+        },
     )
 
     return {
         "slot_number": updated[0],
-        "voice_id": updated[1],
+        "gemini_voice_name": updated[1],
         "label": updated[2],
     }
 
@@ -688,7 +692,7 @@ def create_prompt(payload: PromptCreate, current_user=Depends(require_roles("adm
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        "",  # limpiamos instrucciones tras usarlas
+        "",
         payload.selected_voice_slot,
     ))
 
@@ -770,7 +774,7 @@ def update_prompt(prompt_id: int, payload: PromptUpdate, current_user=Depends(re
         generated_base_prompt,
         payload.initial_message,
         payload.anger_level,
-        "",  # limpiamos instrucciones tras usarlas
+        "",
         payload.selected_voice_slot,
         prompt_id,
     ))
@@ -877,7 +881,7 @@ def select_voice_slot(
             "prompt_id": prompt_id,
             "selected_voice_slot": payload.selected_voice_slot,
             "selected_voice_label": voice_info["label"],
-            "selected_voice_id": voice_info["voice_id"],
+            "selected_gemini_voice_name": voice_info["gemini_voice_name"],
         },
     )
 
@@ -885,8 +889,8 @@ def select_voice_slot(
         "ok": True,
         "prompt_id": prompt_id,
         "selected_voice_slot": payload.selected_voice_slot,
-        "selected_voice_id": voice_info["voice_id"],
         "selected_voice_label": voice_info["label"],
+        "selected_gemini_voice_name": voice_info["gemini_voice_name"],
     }
 
 
@@ -1074,7 +1078,7 @@ async def generate_variant_from_audio(
 
 
 # =========================
-# TWILIO / ELEVENLABS
+# TWILIO / LEGACY PLACEHOLDER
 # =========================
 
 @app.post("/twilio/inbound")
@@ -1114,45 +1118,20 @@ async def twilio_inbound(request: Request):
     selected_voice_slot = row[4]
 
     selected_voice = get_selected_voice_info(selected_voice_slot)
-    selected_voice_id = selected_voice["voice_id"]
+    selected_gemini_voice_name = selected_voice["gemini_voice_name"]
 
     payload = {
-        "agent_id": os.getenv("ELEVENLABS_AGENT_ID"),
+        "message": "Este endpoint quedará sustituido por el runtime Gemini separado.",
+        "active_prompt_id": active_prompt_id,
+        "active_prompt_name": active_prompt_name,
         "from_number": from_number,
         "to_number": to_number,
-        "direction": "inbound",
-        "conversation_initiation_client_data": {
-            "type": "conversation_initiation_client_data",
-            "dynamic_variables": {
-                "call_sid": call_sid,
-                "active_prompt_id": str(active_prompt_id),
-                "active_prompt_name": active_prompt_name,
-            },
-            "conversation_config_override": {
-                "agent": {
-                    "prompt": {
-                        "prompt": override_prompt
-                    },
-                    "first_message": override_initial_message
-                },
-                "tts": {
-                    "voice_id": selected_voice_id
-                }
-            }
-        }
+        "call_sid": call_sid,
+        "selected_voice_slot": selected_voice_slot,
+        "selected_voice_label": selected_voice["label"],
+        "selected_gemini_voice_name": selected_gemini_voice_name,
+        "initial_message": override_initial_message,
+        "prompt_loaded": bool(override_prompt),
     }
 
-    resp = requests.post(
-        "https://api.elevenlabs.io/v1/convai/twilio/register-call",
-        headers={
-            "xi-api-key": os.getenv("ELEVENLABS_API_KEY"),
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=20,
-    )
-
-    if not resp.ok:
-        raise HTTPException(status_code=500, detail=f"ElevenLabs error: {resp.text}")
-
-    return Response(content=resp.text, media_type="application/xml")
+    return payload
